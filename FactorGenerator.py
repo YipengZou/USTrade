@@ -254,9 +254,9 @@ class FactorGenerator():
 if __name__ == '__main__':
     df = pl.read_csv('/home/sida/YIPENG/local_chatgpt/temp/US_trade/train.csv')
     df = df.filter(~df['target'].is_null())
-    df_use = df.filter(pl.col('date_id') >= 470).to_pandas()
+    df_use = df.filter(df['date_id'] < 1000).to_pandas()
 
     gen = FactorGenerator(df_use, 'train')
     trained_df = gen.run()
     trained_df['time_id'] = trained_df['date_id'] * 1000 + trained_df['seconds_in_bucket']
-    print(trained_df.head())
+    trained_df.reset_index(drop=True).to_feather('/home/sida/YIPENG/local_chatgpt/temp/US_trade/data/factors.feather')
