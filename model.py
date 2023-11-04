@@ -5,6 +5,7 @@ import pickle
 import xgboost as xgb
 import lightgbm as lgb
 import optuna
+import numpy as np
 from optuna.trial import Trial
 import pandas as pd
 from typing import List, Tuple, Union
@@ -18,6 +19,8 @@ class Model():
         self._xcols = xcols
         self._ycol = ycol
         self.model = None
+        self.model_name = None
+        self.study = None
     
     @abc.abstractmethod
     def train(self):
@@ -25,16 +28,12 @@ class Model():
 
     @abc.abstractmethod
     def predict(self, X: pd.DataFrame) -> pd.Series:
-        return self.model.predict(X)
-    
-    @abc.abstractmethod
-    def save_model(self):
         pass
-
+    
     def get_model(self):
         return self.model
     
-    def get_loss_baseline(self, y_df: pd.DataFrame) -> Union[float, float]:
+    def get_loss_baseline(self, y_df: pd.DataFrame) -> Tuple[float, float]:
         y_df = y_df.copy()
 
         if self._ycol == 'target':
@@ -43,11 +42,10 @@ class Model():
         elif self._ycol == 'target_change':
             # Simplest guess: change = 0
             y_df['target_shift_6'] = 0
-
-        return (
-            mean_absolute_error(y_df[self._ycol], y_df['target_shift_6']),
-            y_df[[self._ycol, 'target_shift_6']].corr().iloc[0, 1]
-        )
+        
+        pred_loss: float = mean_absolute_error(y_df[self._ycol], y_df['target_shift_6']) # type: ignore
+        base_loss: float = y_df[[self._ycol, 'target_shift_6']].corr().iloc[0, 1] # type: ignore
+        return pred_loss, base_loss
     
     def evaluate(self, y_df: pd.DataFrame) -> Tuple[float, float]:
         for col in ['stock_id', 'date_id', 'seconds_in_bucket', self._ycol, 'pred']:
@@ -61,9 +59,9 @@ class Model():
         print("Model Name: ", self.model_name)
         print("Baseline loss: ", baseline, "Prediction loss: ", pred_loss)
         print("Baseline corr: ", base_corr, "Prediction corr: ", pred_corr)
-        print("Improve:", round(1 - pred_loss / baseline, 4) * 100, "%")
+        print("Improve:", round(1 - pred_loss / baseline, 4) * 100, "%") # type: ignore
         print("=" * 50)
-        return pred_loss, pred_corr
+        return pred_loss, pred_corr # type: ignore
     
     def train_valid_split(
             self, X: pd.DataFrame, y: pd.Series, valid_size: float = 0.2, is_sort: bool = True
@@ -80,12 +78,12 @@ class Model():
             train_Y = y.loc[train_X.index]
             valid_Y = y.loc[valid_X.index]
 
-            return train_X, valid_X, train_Y, valid_Y
+            return train_X, valid_X, train_Y, valid_Y # type: ignore
         
         else:
             head_n = int(len(X) * (1 - valid_size))
             tail_n = len(X) - head_n
-            return X.head(head_n), X.tail(tail_n), y.head(head_n), y.tail(tail_n)
+            return X.head(head_n), X.tail(tail_n), y.head(head_n), y.tail(tail_n) # type: ignore
 
     def save_model(self, path: str) -> None:
         """path: xxx.pkl"""
@@ -113,6 +111,10 @@ class LinearModel(Model):
         linear = LinearRegression()
         linear.fit(X, y)
         self.model = linear
+
+    def predict(self, X: pd.DataFrame) -> pd.Series:
+        X = X.fillna(0)
+        return self.model.predict(X) # type: ignore
     
 class XGBRegressModel(Model):
     def __init__(self, xcols: List[str], ycol: str) -> None:
@@ -122,21 +124,21 @@ class XGBRegressModel(Model):
     def tuner(self, trial: Trial):    
         params = {        
             "n_estimators": trial.suggest_int("n_estimators", 100, 1000, step = 100),
-            "max_depth":trial.suggest_int("max_depth", 3, 7),
-            "learning_rate": trial.suggest_float("learning_rate", 1e-4, 1e-1, log = True), 
-            "subsample": trial.suggest_float("subsample", 0.7, 1.0),
-            "colsample_bytree": trial.suggest_float("colsample_bytree", 0.7, 1.0),
-            "reg_alpha": trial.suggest_float("reg_alpha", 1e-2, 10.),
-            "reg_lambda": trial.suggest_float("reg_lambda", 1e-2, 10.),
-            "gamma": trial.suggest_float("gamma", 0.7, 1.0, step = 0.1),
+            "max_depth":trial.suggest_int("max_depth", 3, 9),
+            "learning_rate": trial.suggest_loguniform("learning_rate", 1e-5, 1e-1), 
+            "subsample": trial.suggest_uniform("subsample", 0.5, 1.0),
+            "colsample_bytree": trial.suggest_uniform("colsample_bytree", 0.5, 1.0),
+            "reg_alpha": trial.suggest_loguniform("reg_alpha", 1e-3, 10.),
+            "reg_lambda": trial.suggest_loguniform("reg_lambda", 1e-3, 10.),
+            "gamma": trial.suggest_uniform("gamma", 0.5, 1.0),
         }
         
         model = xgb.XGBRegressor(
             **params,
             objective = "reg:absoluteerror",
-            tree_method = 'hist',
             device = "cuda",
-            early_stopping_rounds = 50, 
+            tree_method = 'gpu_hist',
+            early_stopping_rounds = 100, 
         )
         
         model.fit(
@@ -150,18 +152,18 @@ class XGBRegressModel(Model):
         return mean_absolute_error(self.valid_Y, y_hat)
     
     def train(self, X: pd.DataFrame, y: pd.Series, n_trials: int = 10) -> None:
-        self.train_X, self.valid_X, self.train_Y, self.valid_Y = self.train_valid_split(X, y)
+        self.train_X, self.valid_X, self.train_Y, self.valid_Y = self.train_valid_split(X, y) # type: ignore
         """Tuning hyper-parameters."""
         self.study = optuna.create_study(
             direction = "minimize", 
             pruner = optuna.pruners.MedianPruner(n_warmup_steps = 10)
         )
-        self.study.optimize(self.tuner, n_trials = n_trials)
+        self.study.optimize(self.tuner, n_trials = n_trials) # type: ignore
         self.best_params = self.study.best_params
 
         self.model = xgb.XGBRegressor(
             **self.best_params,
-            tree_method = 'hist',
+            tree_method = 'gpu_hist',
             device = "cuda",
             early_stopping_rounds = 50, 
         )
@@ -172,6 +174,10 @@ class XGBRegressModel(Model):
             verbose = 0
         )
 
+    def predict(self, X: pd.DataFrame) -> pd.Series:
+        X = X.fillna(0)
+        return self.model.predict(X) # type: ignore
+    
 class LGBMRegressModel(Model):
     def __init__(self, xcols: List[str], ycol: str) -> None:
         super().__init__(xcols, ycol)
@@ -209,19 +215,19 @@ class LGBMRegressModel(Model):
         return mean_absolute_error(self.valid_Y, y_hat)
     
     def train(self, X: pd.DataFrame, y: pd.Series, n_trials: int = 10) -> None:
-        self.train_X, self.valid_X, self.train_Y, self.valid_Y = self.train_valid_split(X, y)
+        self.train_X, self.valid_X, self.train_Y, self.valid_Y = self.train_valid_split(X, y) # type: ignore
         """Tuning hyper-parameters."""
         self.study = optuna.create_study(
             direction = "minimize", 
             pruner = optuna.pruners.MedianPruner(n_warmup_steps = 10)
         )
-        self.study.optimize(self.tuner, n_trials = n_trials)
+        self.study.optimize(self.tuner, n_trials = n_trials) # type: ignore
         self.best_params = self.study.best_params
 
         self.model = lgb.LGBMRegressor(
             **self.best_params,
             device = "cuda",
-            early_stopping_rounds = 50, 
+            early_stopping_rounds = 100, 
         )
         self.model.fit(
             self.train_X, 

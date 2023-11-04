@@ -1,16 +1,19 @@
-#%%
+%%time
 import pandas as pd
 import numpy as np
 from typing import List, Tuple, Union
 import polars as pl
-pl.enable_string_cache()
+pl.enable_string_cache(enable = True)
 import warnings
 warnings.simplefilter(action='ignore', category=FutureWarning)
+
+import abc
+from sklearn.linear_model import LinearRegression
+from sklearn.metrics import mean_absolute_error
+
 from pandarallel import pandarallel
-pandarallel.initialize(progress_bar = True, nb_workers = 20)
-from scipy.integrate import quad
-
-
+# pandarallel.initialize(progress_bar = False)
+pandarallel.initialize(progress_bar = True, nb_workers = 4)
 class ut():
     """常用的函数放到一个类里面"""
     def __init__(self):
@@ -45,6 +48,7 @@ class ut():
     //TODO: 
         1. 试一下log_transform能加到哪里
         2. 用polars dataframe 代替pandas dataframe
+
 """
 
 class FactorGenerator():
@@ -77,7 +81,7 @@ class FactorGenerator():
     """Self created factors"""
     def gen_target_change_g(self, g: pd.DataFrame) -> pd.DataFrame:
         """得到target的变化额度而不是绝对值. 预测变化额度然后叠加上一s的真实target"""
-        g['target_change'] = self.ut.handle_abnormal_val(g['target'].diff(), 0) # type: ignore
+        g['target_change'] = self.ut.handle_abnormal_val(g['target'].diff(), 0)
 
         return self.ut.handle_abnormal_val(g, 'target_change', 0)
 
@@ -86,7 +90,7 @@ class FactorGenerator():
         match_diff = g['matched_size'].diff().fillna(0)
         match_cum = match_diff.cumsum()
         mwap = (match_diff * g['reference_price']).cumsum() / match_cum  # match的均价
-        g.loc[:, 'mwap'] = self.ut.handle_abnormal_val(mwap, 1) # type: ignore
+        g.loc[:, 'mwap'] = self.ut.handle_abnormal_val(mwap, 1)
 
         return self.ut.handle_abnormal_val(g, 'mwap', 1)
 
@@ -187,24 +191,6 @@ class FactorGenerator():
 
         return self.ut.handle_abnormal_val(g, f'f_spread_momentum_direction_{p_spread}_{p_mid}', 0)
 
-    def gen_factor_snapshot_direct_imbalance_g(
-            self, g: pd.DataFrame, gap: int = 1,
-    ):
-        """
-            JL Factor B1
-            直接使用snapshot的数据来计算buy / sell数量变化的差异
-            gap: int
-                间隔多少个period来计算
-        """
-        bid_size_incr = g['bid_size'].diff(gap).fillna(0)
-        ask_size_incr = g['ask_size'].diff(gap).fillna(0)
-        g[f'f_snapshot_direct_imbalance_{gap}'] = bid_size_incr - ask_size_incr
-        g = self.ut.handle_abnormal_val(g, f'f_snapshot_direct_imbalance_{gap}', 0)
-        g[f'f_snapshot_direct_imbalance2_{gap}'] = (bid_size_incr - ask_size_incr) \
-            / (np.abs(bid_size_incr) + np.abs(ask_size_incr))
-
-        return self.ut.handle_abnormal_val(g, f'f_snapshot_direct_imbalance2_{gap}', 0)
-
     """DataFrame Factors"""
     def gen_factor_midprice_vwap_diff_df(self, df: pd.DataFrame) -> pd.DataFrame:
         """
@@ -216,31 +202,6 @@ class FactorGenerator():
 
         return self.ut.handle_abnormal_val(df, 'f_midprice_vwap_diff', 0)
     
-    def gen_factor_log_quote_slope_df(self, df: pd.DataFrame) -> pd.DataFrame:
-        """
-            JL A61, log quote slope
-        """
-        df['f_log_quote_slope'] = np.log(df['ask_price'] / df['bid_price']) \
-            / np.log(df['ask_size'] * df['bid_size']) * 10000
-    
-        return self.ut.handle_abnormal_val(df, 'f_log_quote_slope', 0)
-
-    def gen_factor_sqdr_df(self, df: pd.DataFrame) -> pd.DataFrame:
-        """
-            JL Factor A62
-        """
-        df['f_spdr'] = (df['ask_price'] - df['bid_price']) \
-            / ((df['ask_price'] + df['bid_price']) / 2)
-        return self.ut.handle_abnormal_val(df, 'f_spdr', 0)
-
-    def gen_volume_imbalance_df(self, df: pd.DataFrame) -> pd.DataFrame:
-        """
-            JL Factor A81
-        """
-        df['f_volume_imbalance'] = (df['ask_size'] - df['bid_size']) \
-            / ((df['ask_size'] + df['bid_size']) / 2)
-        return self.ut.handle_abnormal_val(df, 'f_volume_imbalance', 0)
-
     """Generate all factors"""
     def gen_factor_g(self, g: pd.DataFrame) -> pd.DataFrame:
         """所有需要groupby后计算的因子放在这"""
@@ -257,9 +218,6 @@ class FactorGenerator():
         g = self.gen_factor_spread_momentum_g(g, 6)
         g = self.gen_factor_mid_price_momentum_g(g, 6)
         g = self.gen_factor_spread_momentum_direction_g(g, 6, 6)
-        g = self.gen_factor_snapshot_direct_imbalance_g(g, 1)
-        g = self.gen_factor_snapshot_direct_imbalance_g(g, 6)
-
         return g
     
     def gen_factor_df(self, df: pd.DataFrame) -> pd.DataFrame:
@@ -267,10 +225,6 @@ class FactorGenerator():
         df = self.gen_basis_spread_df(df)
         df = self.gen_basis_mid_price_df(df)
         df = self.gen_factor_midprice_vwap_diff_df(df)
-        df = self.gen_factor_log_quote_slope_df(df)
-        df = self.gen_factor_sqdr_df(df)
-        df = self.gen_volume_imbalance_df(df)
-
         return df
     
     def section_normalization(self, g: pd.DataFrame) -> pd.DataFrame:
@@ -278,7 +232,7 @@ class FactorGenerator():
             对每一列的异常值都进行处理了
             根据date_id和seconds_in_bucket的截面来做normalization
         """
-        factors = self.ut.find_pattern_cols(g.columns, 'f_') # type: ignore
+        factors = self.ut.find_pattern_cols(g.columns, 'f_')
         for fac in factors:
             g = self.ut.handle_abnormal_val(g, fac, 0)  # Handle abnormal values first
             g[f'{fac}_norm'] = (g[fac] - g[fac].mean()) / g[fac].std()
@@ -292,23 +246,23 @@ class FactorGenerator():
         res: pd.DataFrame = (
             res.groupby(['stock_id', 'date_id'])
             .parallel_apply(lambda g: self.gen_factor_g(g))
-        ).reset_index(drop = True) # type: ignore
+        ).reset_index(drop = True)
         res: pd.DataFrame = (
             res.groupby(['date_id', 'seconds_in_bucket'])
             .parallel_apply(lambda g: self.section_normalization(g))
-        ).reset_index(drop = True)  # type: ignore # Also handled all the abnormal values. No need to handle further.
+        ).reset_index(drop = True)  # Also handled all the abnormal values. No need to handle further.
         res = res.sort_values(['stock_id', 'date_id', 'seconds_in_bucket'])
         return res
+    
+    def run2(self) -> pd.DataFrame:
+        res: pd.DataFrame = self._df.clone()
+        res: pd.DataFrame = self.gen_factor_df(res)
 
-#%%
 """MAIN"""
-if __name__ == '__main__':
-    df = pl.read_csv('/home/sida/YIPENG/local_chatgpt/temp/US_trade/train.csv')
-    df = df.filter(~df['target'].is_null())
-    df_use = df.filter(df['date_id'] < 1000).to_pandas()
+# df = pl.read_csv('/kaggle/input/optiver-trading-at-the-close/train.csv')
+# df = df.filter(~df['target'].is_null())
+# df_use = df.filter(pl.col('date_id') >= 470).to_pandas()
 
-    gen = FactorGenerator(df_use, 'train')
-    trained_df = gen.run()
-    trained_df['time_id'] = trained_df['date_id'] * 1000 + trained_df['seconds_in_bucket']
-    trained_df.reset_index(drop=True).to_feather('/home/sida/YIPENG/local_chatgpt/temp/US_trade/data/1104_factors_full.feather')
-# %%
+# gen = FactorGenerator(df_use, 'train')
+# trained_df = gen.run()
+# trained_df['time_id'] = trained_df['date_id'] * 1000 + trained_df['seconds_in_bucket']
