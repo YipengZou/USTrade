@@ -1,0 +1,1 @@
+{"name": "LSTM", "epoch": 5, "batch_size": 1024, "learning_rate": 0.001, "input_size": 38, "hidden_size": 96, "output_size": 1, "dropout_prob": 0.2, "num_layers": 2, "loss_list": [6.075161803396124, 6.065210362484581, 6.054492147345292, 6.048593144667776], "save_path": "../models/LSTM.pth"}

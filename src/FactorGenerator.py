@@ -16,7 +16,7 @@ class ut():
     def __init__(self):
         pass
     
-    def find_pattern_cols(self, cols: List[str], pattern: str, direction: int = 1) -> List[str]:
+    def find_pattern_cols(self, cols, pattern: str, direction: int = 1) -> List[str]:
         if direction == 1:
             return [col for col in cols if col.startswith(pattern)]
         if direction == -1:

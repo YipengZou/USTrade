@@ -9,6 +9,7 @@ import numpy as np
 from optuna.trial import Trial
 import pandas as pd
 from typing import List, Tuple, Union
+import pickle
 
 class Model():
     def __init__(
@@ -106,24 +107,31 @@ class LinearModel(Model):
     def __init__(self, xcols: List[str], ycol: str) -> None:
         super().__init__(xcols, ycol)
         self.model_name = 'OLS'
+        self.save_path = f'../models/{self.model_name}.pkl'
 
     def train(self, X: pd.DataFrame, y: pd.Series) -> None:
         linear = LinearRegression()
         linear.fit(X, y)
         self.model = linear
+        self.save_model()
 
     def predict(self, X: pd.DataFrame) -> pd.Series:
         X = X.fillna(0)
         return self.model.predict(X) # type: ignore
     
+    def save_model(self):
+        with open(self.save_path, 'wb') as f:
+            pickle.dump(self.model, f)
+    
 class XGBRegressModel(Model):
     def __init__(self, xcols: List[str], ycol: str) -> None:
         super().__init__(xcols, ycol)
         self.model_name = 'XGB'
+        self.save_path = f'../models/{self.model_name}.pkl'
         
     def tuner(self, trial: Trial):    
         params = {        
-            "n_estimators": trial.suggest_int("n_estimators", 100, 1000, step = 100),
+            "n_estimators": trial.suggest_int("n_estimators", 100, 1500, step = 100),
             "max_depth":trial.suggest_int("max_depth", 3, 9),
             "learning_rate": trial.suggest_loguniform("learning_rate", 1e-5, 1e-1), 
             "subsample": trial.suggest_uniform("subsample", 0.5, 1.0),
@@ -173,11 +181,16 @@ class XGBRegressModel(Model):
             eval_set=[(self.valid_X, self.valid_Y)],
             verbose = 0
         )
+        self.save_model()
 
     def predict(self, X: pd.DataFrame) -> pd.Series:
         X = X.fillna(0)
         return self.model.predict(X) # type: ignore
-    
+
+    def save_model(self):
+        with open(self.save_path, 'wb') as f:
+            pickle.dump(self.model, f)
+
 class LGBMRegressModel(Model):
     def __init__(self, xcols: List[str], ycol: str) -> None:
         super().__init__(xcols, ycol)

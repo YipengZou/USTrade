@@ -1,0 +1,21 @@
+{
+    "name": "SimpleNN",
+    "epoch": 5,
+    "batch_size": 1024,
+    "learning_rate": 0.001,
+    "input_size": 38,
+    "hidden_size": [
+        96,
+        192
+    ],
+    "output_size": 1,
+    "dropout_prob": 0.1,
+    "loss_list": [
+        285.8143309743781,
+        64.54539068121659,
+        17.72839856398733,
+        8.604277314637837,
+        6.8079141767401445
+    ],
+    "save_path": "../models/SimpleNN.pth"
+}
